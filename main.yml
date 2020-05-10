@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: EC2 start/stop cron
+# aws cloudformation deploy --template-file main.yml --stack-name ec2-ssm-stack --parameter-overrides Ec2InstanceIds='"i-hogehoge","i-fugafuga"' CronStart="0 1 * * ? *" CronStop="0 10 * * ? *" --capabilities CAPABILITY_NAMED_IAM
+# aws cloudformation delete-stack --stack-name ec2-ssm-stack
+
+# +9 => 日本の現地時間
+# Default JST 8:00 start, JST 22:00 stop
+Parameters:
+  Ec2InstanceIds:
+    Type: String
+    Default: |
+      "i-xxxxx","i-xxxxx"
+  CronStart:
+    Type: String
+    Default: 0 23 * * ? *
+  CronStop:
+    Type: String
+    Default: 0 13 * * ? *
+
+Resources:
+  SSMIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-iam-role-ssm
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: iam-policy-ec2instance-operation
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstanceStatus
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                Resource: "*"
+
+  CloudWatchEventsStartEc2Instance:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub start-ec2instance-${AWS::StackName}
+      ScheduleExpression: !Sub cron(${CronStart})
+      State: ENABLED
+      Targets:
+        - Id: start-ec2instance
+          Arn: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:automation-definition/AWS-StartEC2Instance:$DEFAULT
+          Input: !Sub
+            - |
+              {
+                "InstanceId": [${InstanceIds}],
+                "AutomationAssumeRole": ["${RoleArn}"]
+              }
+            - {
+                InstanceIds: !Ref Ec2InstanceIds,
+                RoleArn: !GetAtt [SSMIamRole, Arn],
+              }
+          RoleArn: !GetAtt [CloudwatchEventsIamRole, Arn]
+
+  CloudWatchEventsStopEc2Instance:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub stop-ec2instance-${AWS::StackName}
+      ScheduleExpression: !Sub cron(${CronStop})
+      State: ENABLED
+      Targets:
+        - Id: stop-ec2instance
+          Arn: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:automation-definition/AWS-StopEC2Instance:$DEFAULT
+          Input: !Sub
+            - |
+              {
+                "InstanceId": [${InstanceIds}],
+                "AutomationAssumeRole": ["${RoleArn}"]
+              }
+            - {
+                InstanceIds: !Ref Ec2InstanceIds,
+                RoleArn: !GetAtt [SSMIamRole, Arn],
+              }
+          RoleArn: !GetAtt [CloudwatchEventsIamRole, Arn]
+
+  CloudwatchEventsIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-iam-role-cloudwatchevents
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: iam-policy-passrole
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:StartAutomationExecution
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:automation-definition/AWS-StartEC2Instance:$DEFAULT
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:automation-definition/AWS-StopEC2Instance:$DEFAULT
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-iam-role-ssm
+                Condition:
+                  StringLikeIfExists:
+                    "iam:PassedToService": ssm.amazonaws.com
